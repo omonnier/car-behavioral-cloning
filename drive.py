@@ -3,6 +3,8 @@ import base64
 from datetime import datetime
 import os
 import shutil
+import cv2
+import pickle
 
 import numpy as np
 import socketio
@@ -12,7 +14,16 @@ from PIL import Image
 from flask import Flask
 from io import BytesIO
 
+from keras.layers import Dense
+from keras.layers import Input
+from keras.layers import Convolution2D
+from keras.layers import MaxPooling2D
+from keras.layers.convolutional import UpSampling2D
+
 from keras.models import load_model
+from keras.models import Model
+
+from sklearn.externals import joblib
 
 import utils
 
@@ -20,12 +31,111 @@ sio = socketio.Server()
 app = Flask(__name__)
 model = None
 prev_image_array = None
+encoder = None
+scaler = None
 
 MAX_SPEED = 25
 MIN_SPEED = 10
+TARGET_SPEED = 15
+sequence_length = 3
+sequence_interval = 3
 
 speed_limit = MAX_SPEED
 
+
+def convertToTemporalData(train):
+    result = []
+    for index in range(len(train) - sequence_length * sequence_interval):
+        sequence = []
+        for sequence_index in range(sequence_length):
+            sequence.append(train[index + sequence_index * sequence_interval, :])
+        result.append(sequence)
+    result = np.array(result)
+    return result
+
+def X_scaling(scaler, xvalues, ysize):
+    """
+    @param scaler: a scaler object, implementing the transform() and inverse_transform() methods
+                   as for the scikit-learn StandardScaler.
+                   The scaler must expects the inputs in the [X, Y] order (Y placed at the end)
+    @param xvalues: the X values to scale with transform() method
+    @type xvalues: array of shape (m, n)
+    @param ysize: the number of Y outputs (columns)
+    @type ysize: int
+    @return the X values scaled
+    @rtype: array of shape (m, n)
+    """
+    # add dummy y values
+    values = np.concatenate((xvalues, np.zeros((xvalues.shape[0], ysize))), axis=1)
+    scaled_values = scaler.transform(np.array(values))
+    if len(xvalues) == 1:
+        scaled_values = scaled_values.reshape(1, -1)
+    # remove y scaled values
+    return scaled_values[:, :-ysize]
+
+    
+def X_inverse_scaling(scaler, xvalues, ysize):
+    """
+    @param scaler: a scaler object, implementing the transform() and inverse_transform() methods
+                   as for the scikit-learn StandardScaler.
+                   The scaler must expects the inputs in the [X, Y] order (Y placed at the end)
+    @param xvalues: the X values to scale with transform() method
+    @type xvalues: array of shape (m, n)
+    @param ysize: the number of Y outputs (columns)
+    @type ysize: int
+    @return the X values scaled
+    @rtype: array of shape (m, n)
+    """
+    # add dummy y values
+    values = np.concatenate((xvalues, np.zeros((xvalues.shape[0], ysize))), axis=1)
+    scaled_values = scaler.inverse_transform(values)
+    # remove y scaled values
+    return scaled_values[:, :-ysize]
+
+
+def Y_inverse_scaling(scaler, yvalues, xsize):
+    """
+    @param scaler: a scaler object, implementing the transform() and inverse_transform() methods
+                   as for the scikit-learn StandardScaler.
+                   The scaler must expects the inputs in the [X, Y] order (Y placed at the end)
+    @param yvalues: the Y values to inverse scale with inverse_transform() method
+    @type yvalues: array of shape (m, n)
+    @param xsize: the number of X features (columns)
+    @type xsize: int
+    @return the Y values inverse scaled
+    @rtype: array of shape (m, n)
+    """
+    # add dummy X values
+    values = np.concatenate((np.zeros((yvalues.shape[0], xsize)), yvalues), axis=1)
+    inv_scaled_values = scaler.inverse_transform(values)
+    return inv_scaled_values[:, xsize:]
+
+    
+def createEncoder():
+    input_img = Input(shape=(1, utils.ROWS, utils.COLS))
+    
+    x = Convolution2D(32, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(input_img)
+    x = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
+    x = Convolution2D(64, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
+    x = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
+    x = Convolution2D(128, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
+    encoded = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
+    
+    x = Convolution2D(128, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(encoded)
+    x = UpSampling2D(size=(2, 2), dim_ordering='th')(x)
+    x = Convolution2D(64, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
+    x = UpSampling2D(size=(2, 2), dim_ordering='th')(x)
+    x = Convolution2D(32, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
+    x = UpSampling2D(size=(2, 2), dim_ordering='th')(x)
+    decoded = Convolution2D(1, 3, 3, activation='sigmoid', border_mode='same', dim_ordering='th')(x)
+    
+    encoder = Model(input=input_img, output=encoded)
+    autoencoder = Model(input=input_img, output=decoded)
+    autoencoder.compile(optimizer='adadelta', loss='binary_crossentropy')
+    encoder.summary()
+    return encoder
+
+    
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
@@ -40,19 +150,43 @@ def telemetry(sid, data):
         try:
             image = np.asarray(image)       # from PIL image to numpy array
             image = utils.preprocess(image) # apply the preprocessing
-            image = np.array([image])       # the model expects 4D array
 
+            image = image.reshape(-1, utils.ROWS * utils.COLS)
+            # scale X
+            scaled_values = X_scaling(scaler, image, 1)
+            # reshape to image for CNN input
+            scaled_values = scaled_values.reshape(-1, 1, utils.ROWS, utils.COLS)
+            image = encoder.predict(scaled_values)
+        
+            steering_angle = model.predict(image)
+            steering_angle = Y_inverse_scaling(scaler, steering_angle, utils.ROWS * utils.COLS)
+            
+            steering_angle = steering_angle / 20.
+            steering_angle = max(steering_angle, -1.)
+            steering_angle = min(steering_angle, 1.)
+            
             # predict the steering angle for the image
             steering_angle = float(model.predict(image, batch_size=1))
             # lower the throttle as the speed increases
             # if the speed is above the current speed limit, we are on a downhill.
             # make sure we slow down first and then go back to the original max speed.
+            """
             global speed_limit
             if speed > speed_limit:
                 speed_limit = MIN_SPEED  # slow down
             else:
                 speed_limit = MAX_SPEED
             throttle = 1.0 - steering_angle**2 - (speed/speed_limit)**2
+            """
+            if speed == TARGET_SPEED:
+                throttle = 0.
+            elif speed > TARGET_SPEED:
+                throttle -= 0.005
+            else:
+                throttle += 0.005
+                
+            throttle = max(throttle, -1.)
+            throttle = min(throttle, 1.)
 
             print('{} {} {}'.format(steering_angle, throttle, speed))
             send_control(steering_angle, throttle)
@@ -101,6 +235,13 @@ if __name__ == '__main__':
     )
     args = parser.parse_args()
 
+    encoder = createEncoder()
+    encoder.load_weights("encoder_weights_trainingSet_2017021x.h5")
+
+    scaler = joblib.load("scaler.pkl")
+    print("scaler.mean_={}".format(scaler.mean_))
+    print("scaler.scale_={}".format(scaler.scale_))
+    
     model = load_model(args.model)
 
     if args.image_folder != '':
