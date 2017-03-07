@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.image as mpimg
 
 
-IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = 66, 200, 3
+IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = 120, 320, 1
 INPUT_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
 ROWS = 120
@@ -22,15 +22,14 @@ def crop(image):
     Crop the image (removing the sky at the top and the car front at the bottom)
     """
     #return image[60:-25, :, :] # remove the sky and the car front
-    return image[30:150, :, :]
+    return image[70:130, :]
 
 
 def resize(image):
     """
     Resize the image to the input shape used by the network model
     """
-    return image
-    return cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT), cv2.INTER_AREA)
+    return cv2.resize(image, (IMAGE_WIDTH, IMAGE_HEIGHT), interpolation=cv2.INTER_AREA)
 
 
 def rgb2yuv(image):
@@ -49,8 +48,8 @@ def preprocess(image):
     Combine all preprocess functions into one
     """
     image = crop(image)
-    image = resize(image)
     image = rgb2gray(image)
+    image = resize(image)
     return image
 
 

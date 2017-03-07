@@ -16,15 +16,18 @@ from io import BytesIO
 
 from keras.layers import Dense
 from keras.layers import Input
+from keras.layers import Flatten
 from keras.layers import Convolution2D
 from keras.layers import MaxPooling2D
 from keras.layers.convolutional import UpSampling2D
 
 from keras.models import load_model
 from keras.models import Model
+from keras.models import Sequential
 
 from sklearn.externals import joblib
 
+import time
 import utils
 
 sio = socketio.Server()
@@ -34,9 +37,9 @@ prev_image_array = None
 encoder = None
 scaler = None
 
-MAX_SPEED = 25
-MIN_SPEED = 10
-TARGET_SPEED = 15
+MAX_SPEED = 15
+MIN_SPEED = 8
+TARGET_SPEED = 5
 sequence_length = 3
 sequence_interval = 3
 
@@ -135,12 +138,32 @@ def createEncoder():
     encoder.summary()
     return encoder
 
+def createModel():
+    model = Sequential()
+    """
+    model.add(LSTM(input_shape=(sequence_length, 128 * 15 * 40),
+                        output_dim=100, activation='tanh',
+                        dropout_W=dropout_W, dropout_U=dropout_U,
+                        return_sequences=True))
+    model.add(Dropout(dropout))
+    model.add(LSTM(output_dim=100, activation='tanh',
+                  dropout_W=dropout_W, dropout_U=dropout_U))
+    model.add(Dropout(dropout))
+    """
+    model.add(Flatten(input_shape=encoder.layers[-1].output_shape[1:],))
+    model.add(Dense(output_dim=100,
+                    activation='tanh',))
+    model.add(Dense(output_dim=100, activation='tanh'))
+    model.add(Dense(output_dim=1, activation='linear'))
+    model.compile(loss='mse', optimizer="sgd")
+    model.summary()
+    return model
     
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
         # The current steering angle of the car
-        steering_angle = float(data["steering_angle"])
+        #steering_angle = float(data["steering_angle"])
         # The current throttle of the car
         throttle = float(data["throttle"])
         # The current speed of the car
@@ -148,6 +171,7 @@ def telemetry(sid, data):
         # The current image from the center camera of the car
         image = Image.open(BytesIO(base64.b64decode(data["image"])))
         try:
+            start = time.time()
             image = np.asarray(image)       # from PIL image to numpy array
             image = utils.preprocess(image) # apply the preprocessing
 
@@ -156,17 +180,17 @@ def telemetry(sid, data):
             scaled_values = X_scaling(scaler, image, 1)
             # reshape to image for CNN input
             scaled_values = scaled_values.reshape(-1, 1, utils.ROWS, utils.COLS)
-            image = encoder.predict(scaled_values)
-        
-            steering_angle = model.predict(image)
-            steering_angle = Y_inverse_scaling(scaler, steering_angle, utils.ROWS * utils.COLS)
             
-            steering_angle = steering_angle / 20.
+            image = encoder.predict(scaled_values, batch_size=1)
+        
+            steering_angle = model.predict(image, batch_size=1)
+            steering_angle = Y_inverse_scaling(scaler, steering_angle, utils.ROWS * utils.COLS)
+            steering_angle = steering_angle[0][0]
+            
+            #steering_angle = steering_angle / 20.
             steering_angle = max(steering_angle, -1.)
             steering_angle = min(steering_angle, 1.)
             
-            # predict the steering angle for the image
-            steering_angle = float(model.predict(image, batch_size=1))
             # lower the throttle as the speed increases
             # if the speed is above the current speed limit, we are on a downhill.
             # make sure we slow down first and then go back to the original max speed.
@@ -178,17 +202,17 @@ def telemetry(sid, data):
                 speed_limit = MAX_SPEED
             throttle = 1.0 - steering_angle**2 - (speed/speed_limit)**2
             """
-            if speed == TARGET_SPEED:
+            if speed >= TARGET_SPEED:
                 throttle = 0.
-            elif speed > TARGET_SPEED:
-                throttle -= 0.005
             else:
-                throttle += 0.005
+                throttle += 0.01
                 
             throttle = max(throttle, -1.)
             throttle = min(throttle, 1.)
 
             print('{} {} {}'.format(steering_angle, throttle, speed))
+            end = time.time()
+            print("prediction duration = {} ms".format((end - start) * 1000.))
             send_control(steering_angle, throttle)
         except Exception as e:
             print(e)
@@ -239,10 +263,11 @@ if __name__ == '__main__':
     encoder.load_weights("encoder_weights_trainingSet_2017021x.h5")
 
     scaler = joblib.load("scaler.pkl")
-    print("scaler.mean_={}".format(scaler.mean_))
-    print("scaler.scale_={}".format(scaler.scale_))
+    #print("scaler.mean_={}".format(scaler.mean_))
+    #print("scaler.scale_={}".format(scaler.scale_))
     
-    model = load_model(args.model)
+    model = createModel()
+    model.load_weights(args.model)
 
     if args.image_folder != '':
         print("Creating image folder at {}".format(args.image_folder))
