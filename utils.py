@@ -6,6 +6,11 @@ import matplotlib.image as mpimg
 IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS = 120, 320, 1
 INPUT_SHAPE = (IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
 
+TOP_CROP = 80
+BOTTOM_CROP = 130
+LEFT_CROP = 50
+RIGHT_CROP = 270
+
 ROWS = 120
 COLS = 320
 
@@ -22,7 +27,7 @@ def crop(image):
     Crop the image (removing the sky at the top and the car front at the bottom)
     """
     #return image[60:-25, :, :] # remove the sky and the car front
-    return image[70:130, :]
+    return image[TOP_CROP:BOTTOM_CROP, LEFT_CROP:RIGHT_CROP]
 
 
 def resize(image):

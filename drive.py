@@ -38,8 +38,8 @@ encoder = None
 scaler = None
 
 MAX_SPEED = 15
-MIN_SPEED = 8
-TARGET_SPEED = 5
+MIN_SPEED = 5
+TARGET_SPEED = 8
 sequence_length = 3
 sequence_interval = 3
 
@@ -76,7 +76,7 @@ def X_scaling(scaler, xvalues, ysize):
     # remove y scaled values
     return scaled_values[:, :-ysize]
 
-    
+
 def X_inverse_scaling(scaler, xvalues, ysize):
     """
     @param scaler: a scaler object, implementing the transform() and inverse_transform() methods
@@ -113,17 +113,17 @@ def Y_inverse_scaling(scaler, yvalues, xsize):
     inv_scaled_values = scaler.inverse_transform(values)
     return inv_scaled_values[:, xsize:]
 
-    
+
 def createEncoder():
     input_img = Input(shape=(1, utils.ROWS, utils.COLS))
-    
+
     x = Convolution2D(32, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(input_img)
     x = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
     x = Convolution2D(64, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
     x = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
     x = Convolution2D(128, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
     encoded = MaxPooling2D(pool_size=(2, 2), border_mode='same', dim_ordering='th')(x)
-    
+
     x = Convolution2D(128, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(encoded)
     x = UpSampling2D(size=(2, 2), dim_ordering='th')(x)
     x = Convolution2D(64, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
@@ -131,7 +131,7 @@ def createEncoder():
     x = Convolution2D(32, 3, 3, activation='relu', border_mode='same', dim_ordering='th')(x)
     x = UpSampling2D(size=(2, 2), dim_ordering='th')(x)
     decoded = Convolution2D(1, 3, 3, activation='sigmoid', border_mode='same', dim_ordering='th')(x)
-    
+
     encoder = Model(input=input_img, output=encoded)
     autoencoder = Model(input=input_img, output=decoded)
     autoencoder.compile(optimizer='adadelta', loss='binary_crossentropy')
@@ -158,7 +158,7 @@ def createModel():
     model.compile(loss='mse', optimizer="sgd")
     model.summary()
     return model
-    
+
 @sio.on('telemetry')
 def telemetry(sid, data):
     if data:
@@ -180,17 +180,17 @@ def telemetry(sid, data):
             scaled_values = X_scaling(scaler, image, 1)
             # reshape to image for CNN input
             scaled_values = scaled_values.reshape(-1, 1, utils.ROWS, utils.COLS)
-            
+
             image = encoder.predict(scaled_values, batch_size=1)
-        
+
             steering_angle = model.predict(image, batch_size=1)
             steering_angle = Y_inverse_scaling(scaler, steering_angle, utils.ROWS * utils.COLS)
             steering_angle = steering_angle[0][0]
-            
+
             #steering_angle = steering_angle / 20.
             steering_angle = max(steering_angle, -1.)
             steering_angle = min(steering_angle, 1.)
-            
+
             # lower the throttle as the speed increases
             # if the speed is above the current speed limit, we are on a downhill.
             # make sure we slow down first and then go back to the original max speed.
@@ -204,15 +204,18 @@ def telemetry(sid, data):
             """
             if speed >= TARGET_SPEED:
                 throttle = 0.
+            elif speed < MIN_SPEED:
+                throttle += 0.05
             else:
                 throttle += 0.01
-                
+
             throttle = max(throttle, -1.)
             throttle = min(throttle, 1.)
 
-            print('{} {} {}'.format(steering_angle, throttle, speed))
             end = time.time()
-            print("prediction duration = {} ms".format((end - start) * 1000.))
+            pred_duration = (end - start) * 1000.
+            print('steering angle={}, throttle={}, speed={}, prediction duration={}ms'.format(
+                steering_angle, throttle, speed, pred_duration))
             send_control(steering_angle, throttle)
         except Exception as e:
             print(e)
@@ -265,7 +268,7 @@ if __name__ == '__main__':
     scaler = joblib.load("scaler.pkl")
     #print("scaler.mean_={}".format(scaler.mean_))
     #print("scaler.scale_={}".format(scaler.scale_))
-    
+
     model = createModel()
     model.load_weights(args.model)
 
