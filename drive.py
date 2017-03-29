@@ -1,6 +1,7 @@
 import argparse
 import base64
 from datetime import datetime
+import locale
 import os
 import shutil
 import cv2
@@ -29,6 +30,8 @@ from sklearn.externals import joblib
 
 import time
 import utils
+
+locale.setlocale(locale.LC_NUMERIC, '')
 
 sio = socketio.Server()
 app = Flask(__name__)
@@ -163,11 +166,11 @@ def createModel():
 def telemetry(sid, data):
     if data:
         # The current steering angle of the car
-        #steering_angle = float(data["steering_angle"])
+        #steering_angle = locale.atof(data["steering_angle"])
         # The current throttle of the car
-        throttle = float(data["throttle"])
+        throttle = locale.atof(data["throttle"])
         # The current speed of the car
-        speed = float(data["speed"])
+        speed = locale.atof(data["speed"])
         # The current image from the center camera of the car
         image = Image.open(BytesIO(base64.b64decode(data["image"])))
         try:
@@ -211,6 +214,9 @@ def telemetry(sid, data):
 
             throttle = max(throttle, -1.)
             throttle = min(throttle, 1.)
+
+            throttle = locale.str(throttle)
+            steering_angle = locale.str(steering_angle)
 
             end = time.time()
             pred_duration = (end - start) * 1000.
